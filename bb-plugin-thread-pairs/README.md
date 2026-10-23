@@ -9,6 +9,8 @@ the window.
 - Open a subthread: its parent appears in the other pane.
 - Open a thread with neither: it is maximized; the other panes stay hidden
   until you open a pair again.
+- The parent always ends up on the left and the subthread on the right,
+  whichever pane had focus; focus stays on the thread you opened.
 
 A thread that newly appears on screen triggers the plugin. Focusing a thread
 that is already open triggers it only when neither its parent nor any of its
@@ -22,7 +24,9 @@ Every decision is traced to the plugin log (`bb plugin logs thread-pairs`).
 `app.tsx` mounts an invisible overlay that watches the split layout
 (`useSidebarSplitLayout`) and the routed thread. When a thread lands in the
 focused pane, it focuses the other pane, replaces its thread with the partner
-and focuses back, all through `useBbNavigate().toThread`. Maximize and restore
+and focuses back, all through `useBbNavigate().toThread`. When the thread landed
+on the wrong side, the partner takes its pane and the thread moves to the other
+one instead. Maximize and restore
 go through `sdk.threads.paneAction`, which BB delivers to every connected
 window. The partner rules live in `lib/pairs.ts`.
 

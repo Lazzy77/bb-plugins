@@ -17,8 +17,8 @@ export type LastChildren = Readonly<Record<string, string>>;
 export type Plan =
   | { kind: "none" }
   | { kind: "maximize" }
-  | { kind: "split"; partner: string }
-  | { kind: "replace"; paneThreadId: string; partner: string };
+  | { kind: "split"; partner: string; partnerHere: boolean }
+  | { kind: "replace"; paneThreadId: string; partner: string; partnerHere: boolean };
 
 /**
  * The thread shown beside `threadId`: its remembered or most recently updated
@@ -42,20 +42,31 @@ export function partnerFor(
   return parent && !parent.isHidden ? parent.id : null;
 }
 
-/** What to do once `threadId` has just appeared in the focused pane. */
-export function planFor(threadId: string, panes: readonly PairPane[] | null, partner: string | null): Plan {
+/**
+ * What to do once `threadId` has just appeared in the focused pane. The parent
+ * always ends up left of its child: `partnerHere` means the partner takes the
+ * focused pane and the thread moves to the other one.
+ */
+export function planFor(
+  threadId: string,
+  panes: readonly PairPane[] | null,
+  partner: string | null,
+  threadIsParent: boolean,
+): Plan {
   if (partner === null) return panes !== null && panes.length >= 2 ? { kind: "maximize" } : { kind: "none" };
-  if (panes === null) return { kind: "split", partner };
+  if (panes === null) return { kind: "split", partner, partnerHere: !threadIsParent };
   if (panes.some((p) => p.threadId === partner)) return { kind: "none" };
   const others = panes.filter((p) => p.threadId !== null && p.threadId !== threadId);
-  if (others.length === 0) return { kind: "split", partner };
+  if (others.length === 0) return { kind: "split", partner, partnerHere: !threadIsParent };
   const target = others.reduce((best, p) => {
     const area = p.rect.width * p.rect.height;
     const bestArea = best.rect.width * best.rect.height;
     if (area !== bestArea) return area > bestArea ? p : best;
     return p.rect.x > best.rect.x ? p : best;
   });
-  return { kind: "replace", paneThreadId: target.threadId!, partner };
+  const here = panes.find((p) => p.threadId === threadId);
+  const hereFirst = !here || here.rect.x < target.rect.x || (here.rect.x === target.rect.x && here.rect.y <= target.rect.y);
+  return { kind: "replace", paneThreadId: target.threadId!, partner, partnerHere: hereFirst !== threadIsParent };
 }
 
 /** Thread ids on screen: every pane's thread, or the routed thread without a split. */

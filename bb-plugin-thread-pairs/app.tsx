@@ -10,11 +10,13 @@ import {
   useSidebarSplitLayout,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
-import { partnerFor, planFor, relativeVisible, visibleThreads, type LastChildren, type PairPane } from "./lib/pairs";
+import { partnerFor, planFor, relativeVisible, visibleThreads, type LastChildren, type PairPane, type Plan } from "./lib/pairs";
 
 const LAST_CHILDREN_KEY = "thread-pairs.lastChildren";
 const HOST_MAXIMIZED_KEY = "bb.splitLayout.maximizedPaneId";
 const STEP_TIMEOUT_MS = 1500;
+
+type Step = [name: string, run: () => void, done: () => boolean];
 
 function readLastChildren(): LastChildren {
   try {
@@ -64,7 +66,9 @@ function PairKeeper() {
   const focused = useRef<string | null>(null);
   const running = useRef(false);
   const latestPanes = useRef<readonly PairPane[] | null>(null);
+  const latestThread = useRef<string | null>(null);
   latestPanes.current = layout ? layout.panes : null;
+  latestThread.current = threadId;
 
   const waitFor = async (check: () => boolean): Promise<boolean> => {
     const deadline = Date.now() + STEP_TIMEOUT_MS;
@@ -74,8 +78,7 @@ function PairKeeper() {
     }
     return check();
   };
-  const focusedOn = (target: string) => () =>
-    latestPanes.current?.some((p) => p.isFocused && p.threadId === target) ?? false;
+  const focusedOn = (target: string) => () => latestThread.current === target;
 
   useEffect(() => {
     if (!threadId || status !== "ready") return;
@@ -97,7 +100,8 @@ function PairKeeper() {
 
     const partner = partnerFor(threadId, threads, readLastChildren());
     if (!appeared && (partner === null || relativeVisible(threadId, threads, visible))) return;
-    const plan = planFor(threadId, panes, partner);
+    const threadIsParent = partner !== null && threads.some((t) => t.id === partner && t.parentThreadId === threadId);
+    const plan = planFor(threadId, panes, partner, threadIsParent);
     trace("plan", { threadId, partner, plan });
     const paneAction = (target: string, action: "maximize" | "restore") =>
       sdk.threads.paneAction({ threadId: target, action }).catch((cause: unknown) => {
@@ -112,29 +116,46 @@ function PairKeeper() {
     const maximizedThread = maximized ? panes?.find((p) => p.paneId === maximized)?.threadId ?? null : null;
     if (plan.kind === "none" && !maximizedThread) return;
 
-    const steps: [string, () => void, () => boolean][] =
-      plan.kind === "replace"
-        ? [
-            ["focus-other", () => navigate.toThread(plan.paneThreadId, { split: true }), focusedOn(plan.paneThreadId)],
-            ["open-partner", () => navigate.toThread(plan.partner), focusedOn(plan.partner)],
-            ["focus-back", () => navigate.toThread(threadId, { split: true }), focusedOn(threadId)],
-          ]
-        : plan.kind === "split"
+    const stepsFor = (next: Plan): Step[] => {
+      if (next.kind === "replace") {
+        return next.partnerHere
           ? [
-              ["split-partner", () => navigate.toThread(plan.partner, { split: true }), focusedOn(plan.partner)],
-              ["focus-back", () => navigate.toThread(threadId, { split: true }), focusedOn(threadId)],
+              ["open-partner", () => navigate.toThread(next.partner), focusedOn(next.partner)],
+              ["focus-other", () => navigate.toThread(next.paneThreadId, { split: true }), focusedOn(next.paneThreadId)],
+              ["open-thread", () => navigate.toThread(threadId), focusedOn(threadId)],
             ]
-          : [];
+          : [
+              ["focus-other", () => navigate.toThread(next.paneThreadId, { split: true }), focusedOn(next.paneThreadId)],
+              ["open-partner", () => navigate.toThread(next.partner), focusedOn(next.partner)],
+              ["focus-back", () => navigate.toThread(threadId, { split: true }), focusedOn(threadId)],
+            ];
+      }
+      if (next.kind === "split") {
+        return next.partnerHere
+          ? [
+              ["open-partner", () => navigate.toThread(next.partner), focusedOn(next.partner)],
+              ["split-thread", () => navigate.toThread(threadId, { split: true }), focusedOn(threadId)],
+            ]
+          : [
+              ["split-partner", () => navigate.toThread(next.partner, { split: true }), focusedOn(next.partner)],
+              ["focus-back", () => navigate.toThread(threadId, { split: true }), focusedOn(threadId)],
+            ];
+      }
+      return [];
+    };
     running.current = true;
     void (async () => {
       try {
+        let current: Plan = plan;
         if (maximizedThread) {
           await paneAction(maximizedThread, "restore");
           if (!(await waitFor(() => maximizedPaneId() === null))) {
             trace("step-timeout", { step: "restore", maximized });
             return;
           }
+          current = planFor(threadId, latestPanes.current, partner, threadIsParent);
         }
+        const steps = stepsFor(current);
         for (const [name, run, done] of steps) {
           run();
           if (!(await waitFor(done))) {
@@ -142,7 +163,8 @@ function PairKeeper() {
             return;
           }
         }
-        trace("done", { threadId, partner, restored: maximizedThread });
+        const panesNow = [...(latestPanes.current ?? [])].sort((x, y) => x.rect.x - y.rect.x).map((p) => p.threadId);
+        trace("done", { threadId, partner, restored: maximizedThread, plan: current, panes: panesNow });
       } finally {
         seen.current = visibleThreads(latestPanes.current, threadId);
         focused.current = threadId;
