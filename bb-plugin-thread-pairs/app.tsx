@@ -66,16 +66,16 @@ function PairKeeper() {
   const latestPanes = useRef<readonly PairPane[] | null>(null);
   latestPanes.current = layout ? layout.panes : null;
 
-  const waitFor = async (check: (panes: readonly PairPane[] | null) => boolean): Promise<boolean> => {
+  const waitFor = async (check: () => boolean): Promise<boolean> => {
     const deadline = Date.now() + STEP_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      if (check(latestPanes.current)) return true;
+      if (check()) return true;
       await new Promise((resolve) => window.setTimeout(resolve, 16));
     }
-    return check(latestPanes.current);
+    return check();
   };
-  const focusedOn = (target: string) => (panes: readonly PairPane[] | null) =>
-    panes?.some((p) => p.isFocused && p.threadId === target) ?? false;
+  const focusedOn = (target: string) => () =>
+    latestPanes.current?.some((p) => p.isFocused && p.threadId === target) ?? false;
 
   useEffect(() => {
     if (!threadId || status !== "ready") return;
@@ -101,35 +101,40 @@ function PairKeeper() {
     trace("plan", { threadId, partner, plan });
     const paneAction = (target: string, action: "maximize" | "restore") =>
       sdk.threads.paneAction({ threadId: target, action }).catch((cause: unknown) => {
-        console.error(`thread-pairs: ${action} failed`, cause);
+        trace("pane-action-failed", { action, cause: String(cause) });
       });
 
     if (plan.kind === "maximize") {
       void paneAction(threadId, "maximize");
       return;
     }
-    if (partner !== null) {
-      const maximized = maximizedPaneId();
-      const maximizedThread = maximized ? panes?.find((p) => p.paneId === maximized)?.threadId : null;
-      trace("maximized", { maximized, maximizedThread: maximizedThread ?? null });
-      if (maximizedThread) void paneAction(maximizedThread, "restore");
-    }
-    if (plan.kind === "none") return;
+    const maximized = partner === null ? null : maximizedPaneId();
+    const maximizedThread = maximized ? panes?.find((p) => p.paneId === maximized)?.threadId ?? null : null;
+    if (plan.kind === "none" && !maximizedThread) return;
 
-    running.current = true;
-    const steps: [string, () => void, (panes: readonly PairPane[] | null) => boolean][] =
+    const steps: [string, () => void, () => boolean][] =
       plan.kind === "replace"
         ? [
             ["focus-other", () => navigate.toThread(plan.paneThreadId, { split: true }), focusedOn(plan.paneThreadId)],
             ["open-partner", () => navigate.toThread(plan.partner), focusedOn(plan.partner)],
             ["focus-back", () => navigate.toThread(threadId, { split: true }), focusedOn(threadId)],
           ]
-        : [
-            ["split-partner", () => navigate.toThread(plan.partner, { split: true }), focusedOn(plan.partner)],
-            ["focus-back", () => navigate.toThread(threadId, { split: true }), focusedOn(threadId)],
-          ];
+        : plan.kind === "split"
+          ? [
+              ["split-partner", () => navigate.toThread(plan.partner, { split: true }), focusedOn(plan.partner)],
+              ["focus-back", () => navigate.toThread(threadId, { split: true }), focusedOn(threadId)],
+            ]
+          : [];
+    running.current = true;
     void (async () => {
       try {
+        if (maximizedThread) {
+          await paneAction(maximizedThread, "restore");
+          if (!(await waitFor(() => maximizedPaneId() === null))) {
+            trace("step-timeout", { step: "restore", maximized });
+            return;
+          }
+        }
         for (const [name, run, done] of steps) {
           run();
           if (!(await waitFor(done))) {
@@ -137,7 +142,7 @@ function PairKeeper() {
             return;
           }
         }
-        trace("done", { threadId, partner: plan.partner });
+        trace("done", { threadId, partner, restored: maximizedThread });
       } finally {
         seen.current = visibleThreads(latestPanes.current, threadId);
         focused.current = threadId;
