@@ -16,7 +16,6 @@ export type LastChildren = Readonly<Record<string, string>>;
 
 export type Plan =
   | { kind: "none" }
-  | { kind: "maximize" }
   | { kind: "split"; partner: string; partnerHere: boolean }
   | { kind: "replace"; paneThreadId: string; partner: string; partnerHere: boolean };
 
@@ -42,10 +41,33 @@ export function partnerFor(
   return parent && !parent.isHidden ? parent.id : null;
 }
 
+/** The pane that should show the partner: the one already showing it, else the largest other thread pane. */
+function partnerPane(threadId: string, panes: readonly PairPane[], partner: string): PairPane | null {
+  const showing = panes.find((p) => p.threadId === partner);
+  if (showing) return showing;
+  const others = panes.filter((p) => p.threadId !== null && p.threadId !== threadId);
+  if (others.length === 0) return null;
+  return others.reduce((best, p) => {
+    const area = p.rect.width * p.rect.height;
+    const bestArea = best.rect.width * best.rect.height;
+    if (area !== bestArea) return area > bestArea ? p : best;
+    return p.rect.x > best.rect.x ? p : best;
+  });
+}
+
+/** Panes to close so that only `threadId` and the pane meant for its partner remain. */
+export function panesToClose(threadId: string, panes: readonly PairPane[] | null, partner: string | null): string[] {
+  if (panes === null) return [];
+  const here = panes.find((p) => p.threadId === threadId);
+  if (!here) return [];
+  const keep = partner === null ? null : partnerPane(threadId, panes, partner);
+  return panes.filter((p) => p !== here && p !== keep).map((p) => p.paneId);
+}
+
 /**
- * What to do once `threadId` has just appeared in the focused pane. The parent
- * always ends up left of its child: `partnerHere` means the partner takes the
- * focused pane and the thread moves to the other one.
+ * How to put the partner beside `threadId` once extra panes are closed. The
+ * parent always ends up left of its child: `partnerHere` means the partner
+ * takes the focused pane and the thread moves to the other one.
  */
 export function planFor(
   threadId: string,
@@ -53,18 +75,11 @@ export function planFor(
   partner: string | null,
   threadIsParent: boolean,
 ): Plan {
-  if (partner === null) return panes !== null && panes.length >= 2 ? { kind: "maximize" } : { kind: "none" };
-  if (panes === null) return { kind: "split", partner, partnerHere: !threadIsParent };
-  if (panes.some((p) => p.threadId === partner)) return { kind: "none" };
-  const others = panes.filter((p) => p.threadId !== null && p.threadId !== threadId);
-  if (others.length === 0) return { kind: "split", partner, partnerHere: !threadIsParent };
-  const target = others.reduce((best, p) => {
-    const area = p.rect.width * p.rect.height;
-    const bestArea = best.rect.width * best.rect.height;
-    if (area !== bestArea) return area > bestArea ? p : best;
-    return p.rect.x > best.rect.x ? p : best;
-  });
-  const here = panes.find((p) => p.threadId === threadId);
+  if (partner === null) return { kind: "none" };
+  const target = panes === null ? null : partnerPane(threadId, panes, partner);
+  if (target === null) return { kind: "split", partner, partnerHere: !threadIsParent };
+  if (target.threadId === partner) return { kind: "none" };
+  const here = panes!.find((p) => p.threadId === threadId);
   const hereFirst = !here || here.rect.x < target.rect.x || (here.rect.x === target.rect.x && here.rect.y <= target.rect.y);
   return { kind: "replace", paneThreadId: target.threadId!, partner, partnerHere: hereFirst !== threadIsParent };
 }
